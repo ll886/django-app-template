@@ -7,7 +7,7 @@ https://docs.djangoproject.com/en/4.1/ref/django-admin/#cmdoption-startapp-templ
 ## Usage
 
 ```
-django-admin startapp --template=https://github.com/ll886/django-app-template/archive/main.zip myapp
+django-admin startapp app_name --template=https://github.com/ll886/django-app-template/archive/template.zip
 ```
 
 ## Style Guide
