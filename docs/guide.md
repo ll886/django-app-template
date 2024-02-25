@@ -25,30 +25,34 @@ Example `models.py`:
 from datetime import datetime, timedelta
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.functions import Now
+from .managers import PersonManager
 
 
 class Person(models.Model):
-    # attribute representing database column
-    first_name = models.CharField()
-    last_name = models.CharField()
+    datetime_created = models.DateTimeField(db_default=Now(), null=False, auto_now_add=True)
+    first_name = models.CharField(max_length=255)
+    last_name = models.CharField(max_length=255)
     birthdate = models.DateField()
     email = models.EmailField()
 
-    # property for simple information logic for a single model instance
+    objects = PersonManager()
+
     @property
     def age(self):
-        # <insert code to return age based on self.birthdate>
+        today = datetime.now().date()
+        age = today.year - self.birthdate.year - ((today.month, today.day) < (self.birthdate.month, self.birthdate.day))
+        return age
 
-    # method for simple information logic for a single model instance
-    def get_age_in_x_months(self, x)
-        #  <insert code to return age based on self.birthdate and x argument>
+    def get_age_in_x_months(self, x):
+        birthdate_plus_x_months = self.birthdate + timedelta(days=30 * x)
+        return (datetime.now().date() - birthdate_plus_x_months).days // 365
 
-    # validation logic
     def clean(self):
         if self.birthdate is None:
-            raise ValidationError({'birthdate': _('A person must have a birthday')})
+            raise ValidationError({'birthdate': 'A person must have a birthday'})
         if self.birthdate > datetime.now().date():
-            raise ValidationError({'birthdate': _('Birthday cannot be in the future')})
+            raise ValidationError({'birthdate': 'Birthday cannot be in the future'})
 ```
 
 # Managers
@@ -66,17 +70,20 @@ Example `managers.py`:
 
 ```python
 from django.db import models
+from datetime import datetime, timedelta
 
 class PersonManager(models.Manager):
-    # complex query
     def people_with_birthdays_in_the_next_30_days(self):
-        # <insert query for people whose birthday (month and day only) are within the next 30 days>
-        pass
+        today = datetime.now().date()
+        thirty_days_later = today + timedelta(days=30)
+        return self.filter(
+            birthdate__month=today.month,
+            birthdate__day__range=(today.day, thirty_days_later.day)
+        )
 
-    # query used in multiple places
     def adults(self):
-        # <insert query for people whose birthdate was more than 18 years ago>
-        pass
+        eighteen_years_ago = datetime.now().date() - timedelta(days=365 * 18)
+        return self.filter(birthdate__lte=eighteen_years_ago)
 ```
 
 # Services
@@ -109,6 +116,7 @@ Example `services.py`:
 
 ```python
 from .models import Person
+from ..messages.apis import InternalMessageApi
 
 
 # access models
@@ -117,14 +125,24 @@ def get_person(id: int) -> Person:
     return person
 
 
+def get_people() -> List[Person]:
+    return Person.objects.all()
+
+
+def create_person(*, first_name, last_name, birthdate, email) -> Person:
+    obj = Person(first_name=first_name, last_name=last_name, birthdate=birthdate, email=email)
+    obj.full_clean()
+    obj.save()
+    return obj
+
+
 # business/domain logic
 def send_person_email_message(person_id: int, message: str) -> None:
     # access other services
     person = get_person(person_id)
 
-    # access internal API
-    # <insert code to access a "messages" app's API>
-    #   - the messages app has a service that accesses external APIs such as SendGrid to send a message
+    # access another app's API to send a message 
+    InternalMessageApi.send_message(person.email, message)
 ```
 
 # Serializers
@@ -148,19 +166,20 @@ Example `serializers.py`:
 from rest_framework import serializers
 
 # serializes a person model
-class PersonAPIGetSchema(serializers.Serializer):
+class PersonApiGetSchema(serializers.Serializer):
+    id = serializers.IntegerField()
+    datetime_created = serializers.DateTimeField(format="%Y-%m-%d")
     first_name = serializers.CharField()
     last_name = serializers.CharField()
     birthdate = serializers.DateField()
     email = serializers.EmailField()
 
 # defines API contract for creating a person
-class PersonAPIPostSchema(serializers.Serializer):
+class PersonApiPostSchema(serializers.Serializer):
     first_name = serializers.CharField()
     last_name = serializers.CharField()
     birthdate = serializers.DateField()
     email = serializers.EmailField()
-
 ```
 
 # APIs
@@ -185,16 +204,33 @@ Example `apis.py`:
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from . import services
-from .serializers import PersonAPIGetSchema
+from .serializers import PersonApiGetSchema
 
 
-# external API
-class PersonAPI(APIView):
+# external APIs
+class PersonApi(APIView):
+    def get(self, request):
+        people = services.get_people()
+        serializer = PersonApiGetSchema(people, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = PersonApiPostSchema(data=request.data)
+        if serializer.is_valid():
+            try:
+                people = services.create_person(**serializer.data)
+            except ValidationError as e:
+                return Response(e, status=status.HTTP_400_BAD_REQUEST)
+            serializer = PersonApiGetSchema(institution)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class PersonByIdApi(APIView):
     def get(self, request, id):
         # communicate with services
         person  = services.get_person(id)
         # use serializer
-        serializer = PersonAPIGetSchema(person)
+        serializer = PersonApiGetSchema(person)
         data = serializer.data
         return Response(data)
 
@@ -220,12 +256,25 @@ Example `urls.py`:
 ```python
 from django.urls import path
 
-from .apis import PersonAPI
+from .apis import PersonApi, PersonByIdApi
 
 
 urlpatterns = [
-    path('person/<int:id>/', PersonAPI.as_view()),
+    path('', PersonApi.as_view()),
+    path('<int:id>/', PersonByIdApi.as_view()),
 ]
+
+# In top level urls.py you can do something like this
+# urlpatterns = [
+#     path(
+#         'api/',
+#         include(
+#             [
+#                 path("people/", include("person.urls")),
+#             ]
+#         )
+#     )
+# ]
 ```
 
 # App Config
