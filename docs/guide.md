@@ -357,6 +357,7 @@ You can add any files as needed, such as:
 - `middleware.py`
 - `query_sets.py`
 - `admin.py`
+- `decorators.py`
 
 For any additional files that you create, it is highly recommended that they:
 
